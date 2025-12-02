@@ -620,7 +620,7 @@ async fn request_contact_verification(
 
     let echo_otp = env::var("OTP_ECHO")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+        .unwrap_or(true); // default to true so users can see OTP immediately during integration
 
     // In a real system, send OTP via email/SMS here. For testing, optionally echo the OTP.
     Ok(Json(serde_json::json!({

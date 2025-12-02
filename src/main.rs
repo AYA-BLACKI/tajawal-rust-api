@@ -33,7 +33,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::{net::TcpListener, sync::RwLock};
 use tower_http::{
-    cors::{Any, AllowOrigin, CorsLayer},
+    cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
 use tracing::{error, info};
@@ -1032,11 +1032,6 @@ impl FromRequestParts<Arc<AppState>> for SerialAuth {
 
         Ok(SerialAuth(data.claims))
     }
-}
-
-fn is_sensitive_name(name: &str) -> bool {
-    let lowered = name.to_ascii_lowercase();
-    SENSITIVE_NAMES.iter().any(|term| lowered.contains(term))
 }
 
 fn sign_challenge(id: &str, canonical_name: &str, secret: &[u8]) -> Result<String, ApiError> {

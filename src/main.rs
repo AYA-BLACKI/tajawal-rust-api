@@ -56,6 +56,7 @@ mod tjx_main_forwarder_logic;
 mod tjx_validate;
 mod tjx_validate_decoder;
 mod tjx_validate_forwaed_crypted;
+mod acc;
 
 #[derive(Deserialize)]
 struct SignupRequest {

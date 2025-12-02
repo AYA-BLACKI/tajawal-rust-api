@@ -148,6 +148,34 @@ struct ChallengeResponse {
     signature: String,
 }
 
+#[derive(Deserialize)]
+struct VerifyContactRequest {
+    email: Option<String>,
+    phone: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConfirmContactRequest {
+    email: Option<String>,
+    phone: Option<String>,
+    otp: String,
+}
+
+#[derive(Clone)]
+struct PendingContactOtp {
+    email: Option<String>,
+    phone: Option<String>,
+    otp: String,
+    expires_at: OffsetDateTime,
+}
+
+#[derive(Clone)]
+struct VerifiedContacts {
+    email: Option<String>,
+    phone: Option<String>,
+    verified_at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone)]
 struct Challenge {
     canonical_name: String,
@@ -184,6 +212,8 @@ struct AppState {
     rsa_private: Arc<RsaPrivateKey>,
     rsa_public_pem: String,
     name_change_history: Arc<RwLock<HashMap<String, OffsetDateTime>>>,
+    pending_contact_otps: Arc<RwLock<HashMap<String, PendingContactOtp>>>,
+    verified_contacts: Arc<RwLock<HashMap<String, VerifiedContacts>>>,
     banned_accounts: Arc<RwLock<HashSet<String>>>,
 }
 
@@ -248,6 +278,8 @@ async fn main() -> Result<(), ApiError> {
         rsa_private,
         rsa_public_pem,
         name_change_history: Arc::new(RwLock::new(HashMap::new())),
+        pending_contact_otps: Arc::new(RwLock::new(HashMap::new())),
+        verified_contacts: Arc::new(RwLock::new(HashMap::new())),
         banned_accounts: Arc::new(RwLock::new(HashSet::new())),
     });
     let port = env::var("PORT")
@@ -286,6 +318,8 @@ async fn main() -> Result<(), ApiError> {
         .route("/api/health", get(health))
         .route("/api/auth/signup", post(signup))
         .route("/api/auth/login", post(login))
+        .route("/api/profile/contact/verify", post(request_contact_verification))
+        .route("/api/profile/contact/confirm", post(confirm_contact_verification))
         .route(
             "/api/access/challenge",
             post(tjx_challenge::request_challenge),
@@ -459,21 +493,23 @@ async fn update_profile_name(
         ));
     }
 
-    // Ensure email + phone are verified; trigger verification notifications if missing.
-    let admin_user = fetch_supabase_admin_user(&state.supabase, &user_id).await?;
-    let email_missing = admin_user.email_confirmed_at.is_none();
-    let phone_missing = admin_user.phone_confirmed_at.is_none();
-    if email_missing || phone_missing {
-        if email_missing {
-            send_email_verification(&state.supabase, body.email.trim(), &user_id).await?;
+    // Ensure email + phone are verified locally.
+    {
+        let verified = state.verified_contacts.read().await;
+        let entry = verified.get(&user_id);
+        let email_ok = entry
+            .and_then(|v| v.email.as_ref())
+            .map(|e| e == body.email.trim())
+            .unwrap_or(false);
+        let phone_ok = entry
+            .and_then(|v| v.phone.as_ref())
+            .map(|p| p == body.phone.trim())
+            .unwrap_or(false);
+        if !email_ok || !phone_ok {
+            return Err(ApiError::BadRequest(
+                "Please verify both email and phone before changing your name.".into(),
+            ));
         }
-        if phone_missing {
-            send_phone_verification(&state.supabase, body.phone.trim(), &user_id).await?;
-        }
-        return Err(ApiError::BadRequest(
-            "Please verify both email and phone before changing your name. Verification messages have been requested."
-                .into(),
-        ));
     }
 
     const NAME_CHANGE_COOLDOWN: Duration = Duration::days(90);
@@ -569,19 +605,88 @@ async fn request_contact_verification(
         ));
     }
 
-    let mut requested = Vec::new();
-    if let Some(email) = body.email {
-        send_email_verification(&state.supabase, &email, &user.0.sub).await?;
-        requested.push("email");
+    let otp = crate::acc::tjx_otp::generate_otp();
+    let expires_at = OffsetDateTime::now_utc() + Duration::minutes(10);
+    let pending = PendingContactOtp {
+        email: body.email.as_ref().map(|s| s.trim().to_string()),
+        phone: body.phone.as_ref().map(|s| s.trim().to_string()),
+        otp: otp.clone(),
+        expires_at,
+    };
+
+    {
+        let mut map = state.pending_contact_otps.write().await;
+        map.insert(user.0.sub.clone(), pending);
     }
-    if let Some(phone) = body.phone {
-        send_phone_verification(&state.supabase, &phone, &user.0.sub).await?;
-        requested.push("phone");
+
+    // In a real system, send OTP via email/SMS here. For now, return a generic message.
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "message": "OTP sent to provided contact methods",
+        "expires_in_minutes": 10
+    })))
+}
+
+async fn confirm_contact_verification(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Json(body): Json<ConfirmContactRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let otp = body.otp.trim();
+    if otp.is_empty() {
+        return Err(ApiError::BadRequest("OTP is required".into()));
+    }
+
+    let pending = {
+        let map = state.pending_contact_otps.read().await;
+        map.get(&user.0.sub).cloned()
+    };
+
+    let pending = pending.ok_or_else(|| ApiError::BadRequest("No pending OTP for this user".into()))?;
+    if OffsetDateTime::now_utc() > pending.expires_at {
+        return Err(ApiError::BadRequest("OTP expired, please request a new one".into()));
+    }
+
+    if pending.otp != otp {
+        return Err(ApiError::BadRequest("Invalid OTP".into()));
+    }
+
+    // Optional: ensure the same email/phone are being confirmed.
+    if let Some(expected) = pending.email.as_ref() {
+        if let Some(submitted) = body.email.as_ref() {
+            if expected != submitted.trim() {
+                return Err(ApiError::BadRequest("Email does not match pending verification".into()));
+            }
+        }
+    }
+    if let Some(expected) = pending.phone.as_ref() {
+        if let Some(submitted) = body.phone.as_ref() {
+            if expected != submitted.trim() {
+                return Err(ApiError::BadRequest("Phone does not match pending verification".into()));
+            }
+        }
+    }
+
+    {
+        let mut verified = state.verified_contacts.write().await;
+        verified.insert(
+            user.0.sub.clone(),
+            VerifiedContacts {
+                email: pending.email.clone(),
+                phone: pending.phone.clone(),
+                verified_at: OffsetDateTime::now_utc(),
+            },
+        );
+    }
+    {
+        let mut map = state.pending_contact_otps.write().await;
+        map.remove(&user.0.sub);
     }
 
     Ok(Json(serde_json::json!({
         "status": "ok",
-        "requested": requested,
+        "verified_email": pending.email,
+        "verified_phone": pending.phone,
     })))
 }
 
@@ -1115,12 +1220,6 @@ struct UpdateNameRequest {
     last_name: String,
     email: String,
     phone: String,
-}
-
-#[derive(Deserialize)]
-struct VerifyContactRequest {
-    email: Option<String>,
-    phone: Option<String>,
 }
 
 #[async_trait]

@@ -618,11 +618,16 @@ async fn request_contact_verification(
         map.insert(user.0.sub.clone(), pending);
     }
 
-    // In a real system, send OTP via email/SMS here. For now, return a generic message.
+    let echo_otp = env::var("OTP_ECHO")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    // In a real system, send OTP via email/SMS here. For testing, optionally echo the OTP.
     Ok(Json(serde_json::json!({
         "status": "ok",
         "message": "OTP sent to provided contact methods",
-        "expires_in_minutes": 10
+        "expires_in_minutes": 10,
+        "otp": if echo_otp { Some(otp) } else { None },
     })))
 }
 

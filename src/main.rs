@@ -249,25 +249,38 @@ async fn main() -> Result<(), ApiError> {
         name_locks: Arc::new(RwLock::new(HashSet::new())),
         banned_accounts: Arc::new(RwLock::new(HashSet::new())),
     });
-    let port = env::var("AUTH_PORT")
+    let port = env::var("PORT")
         .ok()
-        .and_then(|p| p.parse::<u16>().ok())
+        .and_then(|p| match p.parse::<u16>() {
+            Ok(p) => Some(p),
+            Err(err) => {
+                error!("PORT is set but invalid ({err}); defaulting to 8080");
+                None
+            }
+        })
         .unwrap_or(8080);
 
     let cors = CorsLayer::new()
-        // Mirror the incoming Origin so credentials are allowed across any host.
-        .allow_origin(AllowOrigin::mirror_request())
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_origin(AllowOrigin::list(vec![
+            HeaderValue::from_static("https://tajawalbeta.netlify.app"),
+            HeaderValue::from_static("http://localhost:5173"),
+        ]))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
-            axum::http::header::ACCEPT,
-            axum::http::header::ORIGIN,
             axum::http::header::HeaderName::from_static("x-serial-token"),
         ])
         .allow_credentials(true);
 
     let app = Router::new()
+        .route("/health", get(health_plain))
         .route("/api/health", get(health))
         .route("/api/auth/signup", post(signup))
         .route("/api/auth/login", post(login))
@@ -294,6 +307,10 @@ async fn main() -> Result<(), ApiError> {
         error!("server error: {err}");
         ApiError::Internal
     })
+}
+
+async fn health_plain() -> impl IntoResponse {
+    "OK"
 }
 
 async fn health() -> impl IntoResponse {
@@ -716,27 +733,6 @@ fn build_supabase_config() -> Result<SupabaseConfig, ApiError> {
         service_role_key,
         client,
     })
-}
-
-fn allowed_origins() -> Vec<HeaderValue> {
-    let mut origins = Vec::new();
-
-    if let Ok(list) = env::var("ALLOWED_ORIGINS") {
-        for origin in list.split(',').map(str::trim).filter(|o| !o.is_empty()) {
-            match HeaderValue::from_str(origin) {
-                Ok(val) => origins.push(val),
-                Err(err) => error!("invalid origin '{origin}': {err}"),
-            }
-        }
-    }
-
-    if origins.is_empty() {
-        origins.push(HeaderValue::from_static("http://localhost:5173"));
-        origins.push(HeaderValue::from_static("http://127.0.0.1:5173"));
-        origins.push(HeaderValue::from_static("http://localhost:3000"));
-    }
-
-    origins
 }
 
 fn build_jwt_validation() -> Result<(DecodingKey, Validation), ApiError> {

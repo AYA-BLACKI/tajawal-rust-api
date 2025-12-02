@@ -1,0 +1,14 @@
+C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\deps\thiserror-c99850ea7a301537.d: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\lib.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\aserror.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\display.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\var.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\private.rs C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\build\thiserror-7a8802013828f960\out/private.rs
+
+C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\deps\libthiserror-c99850ea7a301537.rlib: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\lib.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\aserror.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\display.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\var.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\private.rs C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\build\thiserror-7a8802013828f960\out/private.rs
+
+C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\deps\libthiserror-c99850ea7a301537.rmeta: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\lib.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\aserror.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\display.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\var.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\private.rs C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\build\thiserror-7a8802013828f960\out/private.rs
+
+C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\lib.rs:
+C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\aserror.rs:
+C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\display.rs:
+C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\var.rs:
+C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.17\src\private.rs:
+C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\build\thiserror-7a8802013828f960\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\xampp\\htdocs\\thaoriginal\\bck_end_tjx_auth\\rust\\target_tmp\\debug\\build\\thiserror-7a8802013828f960\\out

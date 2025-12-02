@@ -30,7 +30,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use tokio::{net::TcpListener, sync::RwLock};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -182,7 +182,7 @@ struct AppState {
     challenges: Arc<RwLock<HashMap<String, Challenge>>>,
     rsa_private: Arc<RsaPrivateKey>,
     rsa_public_pem: String,
-    name_locks: Arc<RwLock<HashSet<String>>>,
+    name_change_history: Arc<RwLock<HashMap<String, OffsetDateTime>>>,
     banned_accounts: Arc<RwLock<HashSet<String>>>,
 }
 
@@ -246,7 +246,7 @@ async fn main() -> Result<(), ApiError> {
         challenges: Arc::new(RwLock::new(HashMap::new())),
         rsa_private,
         rsa_public_pem,
-        name_locks: Arc::new(RwLock::new(HashSet::new())),
+        name_change_history: Arc::new(RwLock::new(HashMap::new())),
         banned_accounts: Arc::new(RwLock::new(HashSet::new())),
     });
     let port = env::var("PORT")
@@ -292,6 +292,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/api/access/serial", post(issue_serial_token))
         .route("/api/access/serial/verify", get(verify_serial_token))
         .route("/api/access/public-key", get(public_key))
+        .route("/api/profile/contact/verify", post(request_contact_verification))
         .route("/api/profile/name", post(update_profile_name))
         .route("/api/dashboard", get(protected_dashboard))
         .with_state(state)
@@ -450,9 +451,6 @@ async fn update_profile_name(
         }
     }
 
-    // Require confirmed email + phone in Supabase auth.
-    ensure_email_phone_verified(&state, &user_id).await?;
-
     // Require email + phone to attempt name change.
     if body.email.trim().is_empty() || body.phone.trim().is_empty() {
         return Err(ApiError::BadRequest(
@@ -460,11 +458,34 @@ async fn update_profile_name(
         ));
     }
 
-    // Enforce single name change
+    // Ensure email + phone are verified; trigger verification notifications if missing.
+    let admin_user = fetch_supabase_admin_user(&state.supabase, &user_id).await?;
+    let email_missing = admin_user.email_confirmed_at.is_none();
+    let phone_missing = admin_user.phone_confirmed_at.is_none();
+    if email_missing || phone_missing {
+        if email_missing {
+            send_email_verification(&state.supabase, body.email.trim(), &user_id).await?;
+        }
+        if phone_missing {
+            send_phone_verification(&state.supabase, body.phone.trim(), &user_id).await?;
+        }
+        return Err(ApiError::BadRequest(
+            "Please verify both email and phone before changing your name. Verification messages have been requested."
+                .into(),
+        ));
+    }
+
+    const NAME_CHANGE_COOLDOWN: Duration = Duration::days(90);
+    let now = OffsetDateTime::now_utc();
+    // Enforce cooldown between name changes.
     {
-        let locked = state.name_locks.read().await;
-        if locked.contains(&user_id) {
-            return Err(ApiError::Conflict("Name changes are locked for this account".into()));
+        let history = state.name_change_history.read().await;
+        if let Some(last_change) = history.get(&user_id) {
+            if now - *last_change < NAME_CHANGE_COOLDOWN {
+                return Err(ApiError::Conflict(
+                    "Name can only be changed once every 90 days after verifying email and phone".into(),
+                ));
+            }
         }
     }
 
@@ -479,10 +500,10 @@ async fn update_profile_name(
     // Reuse existing validator for structure/banned words.
     validate_display_name(&candidate)?;
 
-    // Lock the name going forward.
+    // Record the change time to enforce cooldown.
     {
-        let mut locked = state.name_locks.write().await;
-        locked.insert(user_id.clone());
+        let mut history = state.name_change_history.write().await;
+        history.insert(user_id.clone(), now);
     }
 
     // In a real system we'd persist this to Supabase; for now just acknowledge.
@@ -532,6 +553,35 @@ async fn verify_serial_token(
     }
 
     Ok(Json(serde_json::json!({ "status": "ok" })))
+}
+
+async fn request_contact_verification(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Json(body): Json<VerifyContactRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.email.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)
+        && body.phone.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)
+    {
+        return Err(ApiError::BadRequest(
+            "Provide at least one of email or phone to verify".into(),
+        ));
+    }
+
+    let mut requested = Vec::new();
+    if let Some(email) = body.email {
+        send_email_verification(&state.supabase, &email, &user.0.sub).await?;
+        requested.push("email");
+    }
+    if let Some(phone) = body.phone {
+        send_phone_verification(&state.supabase, &phone, &user.0.sub).await?;
+        requested.push("phone");
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "requested": requested,
+    })))
 }
 
 fn to_public_user(user: &SupabaseUser) -> PublicUser {
@@ -702,11 +752,74 @@ async fn fetch_supabase_admin_user(
     })
 }
 
-async fn ensure_email_phone_verified(state: &AppState, user_id: &str) -> Result<(), ApiError> {
-    let user = fetch_supabase_admin_user(&state.supabase, user_id).await?;
-    if user.email_confirmed_at.is_none() || user.phone_confirmed_at.is_none() {
-        return Err(ApiError::Unauthorized);
+async fn send_email_verification(
+    config: &SupabaseConfig,
+    email: &str,
+    user_id: &str,
+) -> Result<(), ApiError> {
+    let endpoint = format!("{}/auth/v1/otp", config.url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "email": email,
+        "create_user": false,
+        "data": { "user_id": user_id },
+    });
+
+    let response = config
+        .client
+        .post(endpoint)
+        .header("apikey", &config.service_role_key)
+        .bearer_auth(&config.service_role_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            error!("email verification request failed: {err}");
+            ApiError::Internal
+        })?;
+
+    if !response.status().is_success() {
+        error!("email verification request returned {}", response.status());
+        return Err(ApiError::BadRequest(
+            "Failed to send email verification. Please try again.".into(),
+        ));
     }
+
+    Ok(())
+}
+
+async fn send_phone_verification(
+    config: &SupabaseConfig,
+    phone: &str,
+    user_id: &str,
+) -> Result<(), ApiError> {
+    let endpoint = format!("{}/auth/v1/otp", config.url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "phone": phone,
+        "create_user": false,
+        "channel": "sms",
+        "data": { "user_id": user_id },
+    });
+
+    let response = config
+        .client
+        .post(endpoint)
+        .header("apikey", &config.service_role_key)
+        .bearer_auth(&config.service_role_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            error!("phone verification request failed: {err}");
+            ApiError::Internal
+        })?;
+
+    if !response.status().is_success() {
+        error!("phone verification request returned {}", response.status());
+        return Err(ApiError::BadRequest(
+            "Failed to send phone verification. Please try again.".into(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -1001,6 +1114,12 @@ struct UpdateNameRequest {
     last_name: String,
     email: String,
     phone: String,
+}
+
+#[derive(Deserialize)]
+struct VerifyContactRequest {
+    email: Option<String>,
+    phone: Option<String>,
 }
 
 #[async_trait]

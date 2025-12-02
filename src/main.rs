@@ -318,7 +318,6 @@ async fn main() -> Result<(), ApiError> {
         .route("/api/health", get(health))
         .route("/api/auth/signup", post(signup))
         .route("/api/auth/login", post(login))
-        .route("/api/profile/contact/verify", post(request_contact_verification))
         .route("/api/profile/contact/confirm", post(confirm_contact_verification))
         .route(
             "/api/access/challenge",

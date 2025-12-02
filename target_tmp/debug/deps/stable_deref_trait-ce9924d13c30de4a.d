@@ -1,7 +1,0 @@
-C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\deps\stable_deref_trait-ce9924d13c30de4a.d: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\stable_deref_trait-1.2.1\src\lib.rs
-
-C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\deps\libstable_deref_trait-ce9924d13c30de4a.rlib: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\stable_deref_trait-1.2.1\src\lib.rs
-
-C:\xampp\htdocs\thaoriginal\bck_end_tjx_auth\rust\target_tmp\debug\deps\libstable_deref_trait-ce9924d13c30de4a.rmeta: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\stable_deref_trait-1.2.1\src\lib.rs
-
-C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\stable_deref_trait-1.2.1\src\lib.rs:

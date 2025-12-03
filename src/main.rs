@@ -771,7 +771,7 @@ async fn capture_logs(
     let client_ip = extract_client_ip(req.headers());
 
     let (parts, body) = req.into_parts();
-    let req_bytes = match to_bytes(body).await {
+    let req_bytes = match to_bytes(body, BODY_SNAPSHOT_LIMIT).await {
         Ok(bytes) => bytes,
         Err(err) => {
             error!("failed to read request body for log capture: {err}");
@@ -784,7 +784,7 @@ async fn capture_logs(
     let response = next.run(req).await;
     let status = response.status().as_u16();
     let (parts, body) = response.into_parts();
-    let res_bytes = match to_bytes(body).await {
+    let res_bytes = match to_bytes(body, BODY_SNAPSHOT_LIMIT).await {
         Ok(bytes) => bytes,
         Err(err) => {
             error!("failed to read response body for log capture: {err}");

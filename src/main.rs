@@ -508,7 +508,6 @@ async fn protected_dashboard(user: AuthUser) -> Result<(HeaderMap, Json<serde_js
 
 async fn fetch_logs(
     State(state): State<Arc<AppState>>,
-    _serial: SerialAuth,
     Query(query): Query<LogsQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = query

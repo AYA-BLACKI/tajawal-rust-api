@@ -1,12 +1,20 @@
 use std::{
-    collections::{HashMap, HashSet},
-    env, net::SocketAddr, sync::Arc,
+    collections::{HashMap, HashSet, VecDeque},
+    env,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Instant,
 };
 
 use axum::{
     Json, Router, async_trait,
-    extract::{FromRequestParts, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, request::Parts},
+    body::{to_bytes, Body, Bytes},
+    extract::{FromRequestParts, Query, State},
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, request::Parts},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -45,6 +53,9 @@ const SENSITIVE_NAMES: &[&str] = &[
     "admin", "root", "support", "system", "owner", "fuck", "shit", "bitch", "test", "dummy",
     "hacker", "attack", "exploit", "spam",
 ];
+const MAX_LOG_ENTRIES: usize = 400;
+const BODY_SNAPSHOT_LIMIT: usize = 2_000;
+const DEFAULT_LOG_LIMIT: usize = 200;
 
 mod tjx_challenge;
 mod tjx_checker;
@@ -199,6 +210,25 @@ struct SerialClaims {
     iss: Option<String>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+struct LogEntry {
+    id: u64,
+    ts_ms: i64,
+    method: String,
+    path: String,
+    status: u16,
+    duration_ms: u64,
+    user_agent: Option<String>,
+    client_ip: Option<String>,
+    request_body: Option<String>,
+    response_body: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LogsQuery {
+    limit: Option<usize>,
+}
+
 #[derive(Clone)]
 struct AppState {
     supabase: SupabaseConfig,
@@ -215,6 +245,8 @@ struct AppState {
     pending_contact_otps: Arc<RwLock<HashMap<String, PendingContactOtp>>>,
     verified_contacts: Arc<RwLock<HashMap<String, VerifiedContacts>>>,
     banned_accounts: Arc<RwLock<HashSet<String>>>,
+    logs: Arc<RwLock<VecDeque<LogEntry>>>,
+    log_seq: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -281,6 +313,8 @@ async fn main() -> Result<(), ApiError> {
         pending_contact_otps: Arc::new(RwLock::new(HashMap::new())),
         verified_contacts: Arc::new(RwLock::new(HashMap::new())),
         banned_accounts: Arc::new(RwLock::new(HashSet::new())),
+        logs: Arc::new(RwLock::new(VecDeque::new())),
+        log_seq: Arc::new(AtomicU64::new(1)),
     });
     let port = env::var("PORT")
         .ok()
@@ -304,8 +338,8 @@ async fn main() -> Result<(), ApiError> {
             Method::POST,
             Method::PUT,
             Method::DELETE,
-            Method::OPTIONS,
-        ])
+        Method::OPTIONS,
+    ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -329,7 +363,9 @@ async fn main() -> Result<(), ApiError> {
         .route("/api/profile/contact/verify", post(request_contact_verification))
         .route("/api/profile/name", post(update_profile_name))
         .route("/api/dashboard", get(protected_dashboard))
-        .with_state(state)
+        .route("/api/logs", get(fetch_logs))
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state, capture_logs))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
@@ -468,6 +504,31 @@ async fn protected_dashboard(user: AuthUser) -> Result<(HeaderMap, Json<serde_js
         "email": email,
         "message": "Protected dashboard data"
     }))))
+}
+
+async fn fetch_logs(
+    State(state): State<Arc<AppState>>,
+    _serial: SerialAuth,
+    Query(query): Query<LogsQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LOG_LIMIT)
+        .clamp(1, MAX_LOG_ENTRIES);
+
+    let entries = {
+        let guard = state.logs.read().await;
+        guard
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    Ok(Json(serde_json::json!({
+        "entries": entries
+    })))
 }
 
 async fn update_profile_name(
@@ -692,6 +753,78 @@ async fn confirm_contact_verification(
         "verified_email": pending.email,
         "verified_phone": pending.phone,
     })))
+}
+
+async fn capture_logs(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let started = Instant::now();
+    let method = req.method().to_string();
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+    let user_agent = extract_user_agent(req.headers());
+    let client_ip = extract_client_ip(req.headers());
+
+    let (parts, body) = req.into_parts();
+    let req_bytes = match to_bytes(body).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            error!("failed to read request body for log capture: {err}");
+            Bytes::new()
+        }
+    };
+    let request_body = stringify_body(&req_bytes);
+    let req = Request::from_parts(parts, Body::from(req_bytes.clone()));
+
+    let response = next.run(req).await;
+    let status = response.status().as_u16();
+    let (parts, body) = response.into_parts();
+    let res_bytes = match to_bytes(body).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            error!("failed to read response body for log capture: {err}");
+            Bytes::new()
+        }
+    };
+    let response_body = stringify_body(&res_bytes);
+    let response = Response::from_parts(parts, Body::from(res_bytes.clone()));
+
+    let entry = LogEntry {
+        id: state.next_log_id(),
+        ts_ms: (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64,
+        method,
+        path,
+        status,
+        duration_ms: started.elapsed().as_millis() as u64,
+        user_agent,
+        client_ip,
+        request_body,
+        response_body,
+    };
+    state.append_log(entry).await;
+
+    response
+}
+
+fn stringify_body(bytes: &Bytes) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let capped = if bytes.len() > BODY_SNAPSHOT_LIMIT {
+        &bytes[..BODY_SNAPSHOT_LIMIT]
+    } else {
+        bytes.as_ref()
+    };
+    let mut text = String::from_utf8_lossy(capped).to_string();
+    if bytes.len() > BODY_SNAPSHOT_LIMIT {
+        text.push_str(&format!("... (+{} bytes)", bytes.len() - BODY_SNAPSHOT_LIMIT));
+    }
+    Some(text)
 }
 
 fn to_public_user(user: &SupabaseUser) -> PublicUser {
@@ -1069,6 +1202,18 @@ fn dashboard_lock_cookie() -> HeaderValue {
 }
 
 impl AppState {
+    async fn append_log(&self, entry: LogEntry) {
+        let mut logs = self.logs.write().await;
+        if logs.len() >= MAX_LOG_ENTRIES {
+            logs.pop_front();
+        }
+        logs.push_back(entry);
+    }
+
+    fn next_log_id(&self) -> u64 {
+        self.log_seq.fetch_add(1, Ordering::Relaxed)
+    }
+
     pub(crate) fn decrypt_name(&self, encrypted_b64: &str) -> Result<String, ApiError> {
         let bytes = general_purpose::STANDARD
             .decode(encrypted_b64)

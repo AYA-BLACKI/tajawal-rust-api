@@ -54,7 +54,8 @@ const SENSITIVE_NAMES: &[&str] = &[
     "hacker", "attack", "exploit", "spam",
 ];
 const MAX_LOG_ENTRIES: usize = 400;
-const BODY_SNAPSHOT_LIMIT: usize = 2_000;
+// Cap per-body capture to avoid unbounded memory usage while keeping payloads whole for debugging.
+const BODY_SNAPSHOT_LIMIT: usize = 5 * 1024 * 1024; // 5 MB
 const DEFAULT_LOG_LIMIT: usize = 200;
 
 mod tjx_challenge;
@@ -815,16 +816,7 @@ fn stringify_body(bytes: &Bytes) -> Option<String> {
     if bytes.is_empty() {
         return None;
     }
-    let capped = if bytes.len() > BODY_SNAPSHOT_LIMIT {
-        &bytes[..BODY_SNAPSHOT_LIMIT]
-    } else {
-        bytes.as_ref()
-    };
-    let mut text = String::from_utf8_lossy(capped).to_string();
-    if bytes.len() > BODY_SNAPSHOT_LIMIT {
-        text.push_str(&format!("... (+{} bytes)", bytes.len() - BODY_SNAPSHOT_LIMIT));
-    }
-    Some(text)
+    Some(String::from_utf8_lossy(bytes).to_string())
 }
 
 fn to_public_user(user: &SupabaseUser) -> PublicUser {

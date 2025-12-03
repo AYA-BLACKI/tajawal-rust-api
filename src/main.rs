@@ -331,6 +331,7 @@ async fn main() -> Result<(), ApiError> {
         .allow_origin(AllowOrigin::list(vec![
             HeaderValue::from_static("https://tajawalbeta.netlify.app"),
             HeaderValue::from_static("https://tajawalet.netlify.app"),
+            HeaderValue::from_static("https://tajawalate.netlify.app"),
             HeaderValue::from_static("http://localhost:5173"),
         ]))
         .allow_methods([

@@ -15,7 +15,7 @@ use cookie::{Cookie, SameSite};
 use cookie::time::Duration as CookieDuration;
 use std::sync::Arc;
 
-use crate::security::{jwt::JwtManager, password, totp};
+use crate::security::{password, totp};
 use crate::state::AppState;
 use crate::security::{rate_limit, risk};
 

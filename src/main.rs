@@ -10,6 +10,8 @@ use infra::db::connect;
 use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use security::config::SecurityConfig;
+use infra::supabase::SupabaseCtx;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,7 +23,9 @@ async fn main() -> anyhow::Result<()> {
 
     let db = connect().await?;
     let jwt = security::jwt::JwtManager::default();
-    let shared_state = state::AppState::new(db, jwt);
+    let security = SecurityConfig::default();
+    let supabase = SupabaseCtx::from_env()?;
+    let shared_state = state::AppState::new(db, jwt, security, supabase);
 
     let app = Router::new()
         .merge(routes::router())

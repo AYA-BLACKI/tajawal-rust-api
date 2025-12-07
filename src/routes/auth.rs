@@ -3,18 +3,23 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::post,
     Json, Router,
+    response::{IntoResponse, Response},
+    http::header::SET_COOKIE,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 use time::{Duration, OffsetDateTime};
 use sha2::{Digest, Sha256};
+use cookie::{Cookie, SameSite};
+use cookie::time::Duration as CookieDuration;
+use std::sync::Arc;
 
 use crate::security::{jwt::JwtManager, password, totp};
 use crate::state::AppState;
 use crate::security::{rate_limit, risk};
 
-pub fn router() -> Router<AppState> {
+pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
@@ -53,13 +58,14 @@ async fn register(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<RegisterPayload>,
-) -> Result<Json<TokenResponse>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     if let Some(ip) = risk::extract_ip(&headers) {
         if !rate_limit::check(&ip, 20, 60) {
-            return Err((StatusCode::TOO_MANY_REQUESTS, "Rate limited".into()));
+            return Err((StatusCode::TOO_MANY_REQUESTS, "rate_limited".into()));
         }
-        if !risk::risk_check(Some(&ip), headers.get("user-agent").and_then(|h| h.to_str().ok())) {
-            return Err((StatusCode::FORBIDDEN, "Risk check failed".into()));
+        match risk::risk_check(&state.db, None, Some(&ip), headers.get("user-agent").and_then(|h| h.to_str().ok())).await {
+            risk::RiskDecision::Allow => {}
+            risk::RiskDecision::Block(reason) => return Err((StatusCode::FORBIDDEN, reason.into())),
         }
     }
     if !validate_email(&payload.email) {
@@ -96,16 +102,13 @@ async fn register(
         &state,
         user_id,
         &refresh_hash,
-        None,
-        None,
+        headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+        risk::extract_ip(&headers),
         None,
     )
     .await?;
 
-    Ok(Json(TokenResponse {
-        access_token: access,
-        refresh_token,
-    }))
+    Ok(token_response(access, refresh_token, &state))
 }
 
 #[derive(Deserialize)]
@@ -118,13 +121,10 @@ async fn login(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<LoginPayload>,
-) -> Result<Json<TokenResponse>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     if let Some(ip) = risk::extract_ip(&headers) {
         if !rate_limit::check(&ip, 30, 60) {
-            return Err((StatusCode::TOO_MANY_REQUESTS, "Rate limited".into()));
-        }
-        if !risk::risk_check(Some(&ip), headers.get("user-agent").and_then(|h| h.to_str().ok())) {
-            return Err((StatusCode::FORBIDDEN, "Risk check failed".into()));
+            return Err((StatusCode::TOO_MANY_REQUESTS, "rate_limited".into()));
         }
     }
     if !validate_email(&payload.email) {
@@ -154,8 +154,34 @@ async fn login(
 
     let valid = password::verify_password(&payload.password, &stored_hash).map_err(internal_error)?;
     if !valid {
+        sqlx::query("UPDATE users SET failed_login_count = coalesce(failed_login_count,0)+1, last_failed_at = now() WHERE id = $1")
+            .bind(user_id)
+            .execute(&state.db)
+            .await
+            .ok();
         return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".into()));
     }
+
+    let ip = risk::extract_ip(&headers);
+    match risk::risk_check(&state.db, Some(user_id), ip.as_deref(), headers.get("user-agent").and_then(|h| h.to_str().ok())).await {
+        risk::RiskDecision::Allow => {}
+        risk::RiskDecision::Block(reason) => return Err((StatusCode::FORBIDDEN, reason.into())),
+    }
+
+    sqlx::query("UPDATE users SET failed_login_count = 0, last_failed_at = NULL WHERE id = $1")
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .ok();
+
+    let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let _ = sqlx::query("INSERT INTO login_logs (id, user_id, ip, user_agent, success, created_at) VALUES ($1, $2, $3, $4, true, now())")
+        .bind(Uuid::new_v4())
+        .bind(user_id)
+        .bind(ip.clone())
+        .bind(ua.clone())
+        .execute(&state.db)
+        .await;
 
     let access = state
         .jwt
@@ -166,16 +192,13 @@ async fn login(
         &state,
         user_id,
         &refresh_hash,
-        None,
-        None,
+        ua.clone(),
+        ip.clone(),
         None,
     )
     .await?;
 
-    Ok(Json(TokenResponse {
-        access_token: access,
-        refresh_token,
-    }))
+    Ok(token_response(access, refresh_token, &state))
 }
 
 #[derive(Deserialize)]
@@ -187,13 +210,11 @@ async fn refresh(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<RefreshPayload>,
-) -> Result<Json<TokenResponse>, (StatusCode, String)> {
-    if let Some(ip) = risk::extract_ip(&headers) {
+) -> Result<Response, (StatusCode, String)> {
+    let ip = risk::extract_ip(&headers);
+    if let Some(ref ip) = ip {
         if !rate_limit::check(&ip, 60, 60) {
-            return Err((StatusCode::TOO_MANY_REQUESTS, "Rate limited".into()));
-        }
-        if !risk::risk_check(Some(&ip), headers.get("user-agent").and_then(|h| h.to_str().ok())) {
-            return Err((StatusCode::FORBIDDEN, "Risk check failed".into()));
+            return Err((StatusCode::TOO_MANY_REQUESTS, "rate_limited".into()));
         }
     }
     let hash = hash_refresh_token(&payload.refresh_token);
@@ -217,6 +238,10 @@ async fn refresh(
     }
 
     let user_id: Uuid = row.get("user_id");
+    match risk::risk_check(&state.db, Some(user_id), ip.as_deref(), headers.get("user-agent").and_then(|h| h.to_str().ok())).await {
+        risk::RiskDecision::Allow => {}
+        risk::RiskDecision::Block(reason) => return Err((StatusCode::FORBIDDEN, reason.into())),
+    }
     let access = state
         .jwt
         .issue_access(&user_id.to_string(), Some("user".into()))
@@ -230,16 +255,13 @@ async fn refresh(
         &state,
         user_id,
         &new_hash,
-        None,
-        None,
+        headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+        risk::extract_ip(&headers),
         Some(old_id),
     )
     .await?;
 
-    Ok(Json(TokenResponse {
-        access_token: access,
-        refresh_token: new_refresh,
-    }))
+    Ok(token_response(access, new_refresh, &state))
 }
 
 #[derive(Deserialize)]
@@ -250,7 +272,7 @@ struct LogoutPayload {
 async fn logout(
     State(state): State<std::sync::Arc<AppState>>,
     Json(payload): Json<LogoutPayload>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     if let Some(rt) = payload.refresh_token {
         let hash = hash_refresh_token(&rt);
         let _ = sqlx::query("UPDATE refresh_tokens SET revoked_at = now() WHERE token_hash = $1")
@@ -259,7 +281,13 @@ async fn logout(
             .await
             .map_err(internal_error)?;
     }
-    Ok("logged out")
+    let mut res = Json(TokenResponse {
+        access_token: "".into(),
+        refresh_token: "".into(),
+    })
+    .into_response();
+    clear_cookies(&mut res, &state.security);
+    Ok(res)
 }
 
 #[derive(Deserialize)]
@@ -412,4 +440,59 @@ async fn revoke_refresh_token(
         .await
         .map_err(internal_error)?;
     Ok(())
+}
+
+fn token_response(access: String, refresh: String, state: &std::sync::Arc<AppState>) -> Response {
+    let body = Json(TokenResponse {
+        access_token: access.clone(),
+        refresh_token: refresh.clone(),
+    });
+    let mut res = body.into_response();
+    attach_cookies(&mut res, state, &access, &refresh);
+    res
+}
+
+fn attach_cookies(res: &mut Response, state: &std::sync::Arc<AppState>, access: &str, refresh: &str) {
+    let cfg = &state.security;
+    let same_site = if cfg.same_site_strict { SameSite::Strict } else { SameSite::Lax };
+    let access_cookie = Cookie::build(cfg.access_cookie_name.clone(), access.to_string())
+        .http_only(true)
+        .secure(cfg.secure_cookies)
+        .same_site(same_site)
+        .max_age(CookieDuration::minutes(5))
+        .path("/")
+        .finish()
+        .to_string();
+    let refresh_cookie = Cookie::build(cfg.refresh_cookie_name.clone(), refresh.to_string())
+        .http_only(true)
+        .secure(cfg.secure_cookies)
+        .same_site(same_site)
+        .max_age(CookieDuration::days(REFRESH_TTL_DAYS))
+        .path("/")
+        .finish()
+        .to_string();
+    res.headers_mut().append(SET_COOKIE, access_cookie.parse().unwrap());
+    res.headers_mut().append(SET_COOKIE, refresh_cookie.parse().unwrap());
+}
+
+fn clear_cookies(res: &mut Response, cfg: &crate::security::config::SecurityConfig) {
+    let same_site = if cfg.same_site_strict { SameSite::Strict } else { SameSite::Lax };
+    let access_cookie = Cookie::build(cfg.access_cookie_name.clone(), "")
+        .http_only(true)
+        .secure(cfg.secure_cookies)
+        .same_site(same_site)
+        .max_age(CookieDuration::seconds(0))
+        .path("/")
+        .finish()
+        .to_string();
+    let refresh_cookie = Cookie::build(cfg.refresh_cookie_name.clone(), "")
+        .http_only(true)
+        .secure(cfg.secure_cookies)
+        .same_site(same_site)
+        .max_age(CookieDuration::seconds(0))
+        .path("/")
+        .finish()
+        .to_string();
+    res.headers_mut().append(SET_COOKIE, access_cookie.parse().unwrap());
+    res.headers_mut().append(SET_COOKIE, refresh_cookie.parse().unwrap());
 }

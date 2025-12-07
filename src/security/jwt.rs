@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: String,
     pub exp: i64,
@@ -26,7 +26,9 @@ pub enum JwtError {
 
 impl Default for JwtManager {
     fn default() -> Self {
-        let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into());
+        let secret = std::env::var("SUPABASE_JWT_SECRET")
+            .or_else(|_| std::env::var("JWT_SECRET"))
+            .unwrap_or_else(|_| "dev-secret-change-me".into());
         Self {
             secret,
             ttl: Duration::minutes(5),

@@ -3,3 +3,4 @@ pub mod jwt;
 pub mod totp;
 pub mod rate_limit;
 pub mod risk;
+pub mod config;

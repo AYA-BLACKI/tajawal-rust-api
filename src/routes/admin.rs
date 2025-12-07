@@ -2,7 +2,7 @@ use axum::{Router, routing::get, Json};
 use serde::Serialize;
 use std::sync::Arc;
 use crate::state::AppState;
-use crate::security::jwt::Claims;
+use sqlx::Row;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()

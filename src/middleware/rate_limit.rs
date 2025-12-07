@@ -1,5 +1,4 @@
 use axum::{
-    body::Body,
     http::Request,
     response::Response,
     middleware::Next,
@@ -13,13 +12,9 @@ use once_cell::sync::Lazy;
 
 use crate::state::AppState;
 
-#[derive(Clone)]
-pub struct RateLimitConfig {
-    pub max_requests: u32,
-    pub window_secs: u64,
-}
+const MAX_REQUESTS: u32 = 10;
+const WINDOW_SECS: u64 = 60;
 
-#[derive(Default)]
 struct Bucket {
     count: u32,
     window_start: Instant,
@@ -28,11 +23,13 @@ struct Bucket {
 static BUCKETS: Lazy<DashMap<String, Bucket>> = Lazy::new(DashMap::new);
 
 pub async fn rate_limit_with_config(
-    State(_state): State<Arc<AppState>>,
-    req: Request<Body>,
-    next: Next<Body>,
-    config: RateLimitConfig,
+    req: Request<axum::body::Body>,
+    next: Next,
 ) -> Result<Response, (StatusCode, String)> {
+    let _state = req
+        .extensions()
+        .get::<Arc<AppState>>()
+        .cloned();
     let path = req.uri().path().to_string();
     let ip = req
         .headers()
@@ -48,12 +45,12 @@ pub async fn rate_limit_with_config(
         window_start: Instant::now(),
     });
 
-    if entry.window_start.elapsed() > Duration::from_secs(config.window_secs) {
+    if entry.window_start.elapsed() > Duration::from_secs(WINDOW_SECS) {
         entry.count = 0;
         entry.window_start = Instant::now();
     }
 
-    if entry.count >= config.max_requests {
+    if entry.count >= MAX_REQUESTS {
         return Err((StatusCode::TOO_MANY_REQUESTS, "rate_limited".into()));
     }
 

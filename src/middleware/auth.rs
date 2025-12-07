@@ -1,20 +1,18 @@
-use axum::{
-    body::Body,
-    extract::State,
-    http::{Request, StatusCode},
-    response::Response,
-    middleware::Next,
-};
+use axum::{http::StatusCode, response::Response, middleware::Next};
 use std::sync::Arc;
 
 use cookie::Cookie;
 use crate::{security::jwt::JwtManager, state::AppState};
 
 pub async fn auth_middleware(
-    State(state): State<Arc<AppState>>,
-    mut req: Request<Body>,
-    next: Next<Body>,
+    mut req: axum::http::Request<axum::body::Body>,
+    next: Next,
 ) -> Result<Response, StatusCode> {
+    let state = req
+        .extensions()
+        .get::<Arc<AppState>>()
+        .cloned()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let jwt: &JwtManager = &state.jwt;
 
     if let Some(token) = bearer_from_header(req.headers()) {

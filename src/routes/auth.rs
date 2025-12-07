@@ -530,21 +530,21 @@ fn token_response(access: String, refresh: String, state: &std::sync::Arc<AppSta
 fn attach_cookies(res: &mut Response, state: &std::sync::Arc<AppState>, access: &str, refresh: &str) {
     let cfg = &state.security;
     let same_site = if cfg.same_site_strict { SameSite::Strict } else { SameSite::Lax };
-    let access_cookie = Cookie::build(cfg.access_cookie_name.clone(), access.to_string())
+    let access_cookie = Cookie::build((cfg.access_cookie_name.clone(), access.to_string()))
         .http_only(true)
         .secure(cfg.secure_cookies)
         .same_site(same_site)
         .max_age(CookieDuration::minutes(5))
         .path("/")
-        .finish()
+        .build()
         .to_string();
-    let refresh_cookie = Cookie::build(cfg.refresh_cookie_name.clone(), refresh.to_string())
+    let refresh_cookie = Cookie::build((cfg.refresh_cookie_name.clone(), refresh.to_string()))
         .http_only(true)
         .secure(cfg.secure_cookies)
         .same_site(same_site)
         .max_age(CookieDuration::days(REFRESH_TTL_DAYS))
         .path("/")
-        .finish()
+        .build()
         .to_string();
     res.headers_mut().append(SET_COOKIE, access_cookie.parse().unwrap());
     res.headers_mut().append(SET_COOKIE, refresh_cookie.parse().unwrap());
@@ -552,21 +552,21 @@ fn attach_cookies(res: &mut Response, state: &std::sync::Arc<AppState>, access: 
 
 fn clear_cookies(res: &mut Response, cfg: &crate::security::config::SecurityConfig) {
     let same_site = if cfg.same_site_strict { SameSite::Strict } else { SameSite::Lax };
-    let access_cookie = Cookie::build(cfg.access_cookie_name.clone(), "")
+    let access_cookie = Cookie::build((cfg.access_cookie_name.clone(), ""))
         .http_only(true)
         .secure(cfg.secure_cookies)
         .same_site(same_site)
         .max_age(CookieDuration::seconds(0))
         .path("/")
-        .finish()
+        .build()
         .to_string();
-    let refresh_cookie = Cookie::build(cfg.refresh_cookie_name.clone(), "")
+    let refresh_cookie = Cookie::build((cfg.refresh_cookie_name.clone(), ""))
         .http_only(true)
         .secure(cfg.secure_cookies)
         .same_site(same_site)
         .max_age(CookieDuration::seconds(0))
         .path("/")
-        .finish()
+        .build()
         .to_string();
     res.headers_mut().append(SET_COOKIE, access_cookie.parse().unwrap());
     res.headers_mut().append(SET_COOKIE, refresh_cookie.parse().unwrap());

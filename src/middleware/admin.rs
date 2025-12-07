@@ -1,9 +1,7 @@
 use axum::{
-    body::Body,
     http::StatusCode,
     response::Response,
     middleware::Next,
-    RequestPartsExt,
 };
 use crate::security::jwt::Claims;
 use crate::state::AppState;
@@ -11,10 +9,14 @@ use std::sync::Arc;
 use sqlx::Row;
 
 pub async fn admin_only(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-    mut req: axum::http::Request<Body>,
-    next: Next<Body>,
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
 ) -> Result<Response, StatusCode> {
+    let state = req
+        .extensions()
+        .get::<Arc<AppState>>()
+        .cloned()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let claims = req.extensions().get::<Claims>().cloned();
     let Some(c) = claims else { return Err(StatusCode::UNAUTHORIZED); };
 

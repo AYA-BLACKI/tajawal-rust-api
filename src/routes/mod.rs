@@ -23,6 +23,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .merge(auth::router().layer(rate_layer))
         .route("/me", get(me).layer(auth_layer.clone()))
+        .route("/dashboard", get(me).layer(auth_layer.clone()))
         .nest(
             "/admin",
             admin::router()

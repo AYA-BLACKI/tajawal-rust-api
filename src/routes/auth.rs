@@ -295,8 +295,32 @@ struct RequestResetPayload {
     email: String,
 }
 
-async fn request_password_reset(Json(_payload): Json<RequestResetPayload>) -> &'static str {
-    "reset requested"
+async fn request_password_reset(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<RequestResetPayload>,
+) -> Result<&'static str, (StatusCode, String)> {
+    let row = sqlx::query("SELECT id FROM users WHERE email = $1")
+        .bind(&payload.email)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal_error)?;
+    let Some(user_id): Option<Uuid> = row.map(|r| r.get("id")) else {
+        return Ok("reset requested");
+    };
+
+    let (token, token_hash) = generate_refresh_token();
+    let expires_at = OffsetDateTime::now_utc() + Duration::minutes(30);
+    sqlx::query("INSERT INTO password_resets (user_id, token_hash, expires_at, used) VALUES ($1, $2, $3, false)
+                 ON CONFLICT (user_id) DO UPDATE SET token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at, used = false")
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(expires_at)
+        .execute(&state.db)
+        .await
+        .map_err(internal_error)?;
+
+    tracing::info!("Password reset token issued for {}: {}", payload.email, token);
+    Ok("reset requested")
 }
 
 #[derive(Deserialize)]
@@ -305,8 +329,59 @@ struct ResetPayload {
     new_password: String,
 }
 
-async fn reset_password(Json(_payload): Json<ResetPayload>) -> &'static str {
-    "reset done"
+async fn reset_password(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ResetPayload>,
+) -> Result<Response, (StatusCode, String)> {
+    if !validate_password(&payload.new_password) {
+        return Err((StatusCode::BAD_REQUEST, "Password too weak (min 12 chars)".into()));
+    }
+
+    let token_hash = hash_refresh_token(&payload.reset_token);
+    let row = sqlx::query(
+        "SELECT user_id, expires_at, used FROM password_resets WHERE token_hash = $1",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(internal_error)?;
+
+    let row = match row {
+        Some(r) => r,
+        None => return Err((StatusCode::UNAUTHORIZED, "Invalid reset token".into())),
+    };
+    let expires_at: OffsetDateTime = row.get("expires_at");
+    let used: bool = row.get("used");
+    if used || expires_at < OffsetDateTime::now_utc() {
+        return Err((StatusCode::UNAUTHORIZED, "Reset token expired".into()));
+    }
+    let user_id: Uuid = row.get("user_id");
+
+    let new_hash = password::hash_password(&payload.new_password).map_err(internal_error)?;
+    sqlx::query("UPDATE users SET password_hash = $1, failed_login_count = 0, last_failed_at = NULL WHERE id = $2")
+        .bind(new_hash)
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal_error)?;
+
+    sqlx::query("UPDATE password_resets SET used = true WHERE token_hash = $1")
+        .bind(&token_hash)
+        .execute(&state.db)
+        .await
+        .ok();
+
+    sqlx::query("UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .ok();
+
+    let access = state.jwt.issue_access(&user_id.to_string(), Some("user".into())).map_err(internal_error)?;
+    let (refresh_token, refresh_hash) = generate_refresh_token();
+    store_refresh_token(&state, user_id, &refresh_hash, None, None, None).await?;
+
+    Ok(token_response(access, refresh_token, &state))
 }
 
 #[derive(Deserialize)]

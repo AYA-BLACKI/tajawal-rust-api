@@ -1,6 +1,6 @@
-pub mod password;
+pub mod config;
 pub mod jwt;
-pub mod totp;
+pub mod password;
 pub mod rate_limit;
 pub mod risk;
-pub mod config;
+pub mod totp;

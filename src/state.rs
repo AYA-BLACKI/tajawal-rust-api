@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::infra::db::Db;
 use crate::infra::supabase::SupabaseCtx;
-use crate::security::jwt::JwtManager;
 use crate::security::config::SecurityConfig;
+use crate::security::jwt::JwtManager;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -14,7 +14,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db: Db, jwt: JwtManager, security: SecurityConfig, supabase: SupabaseCtx) -> Arc<Self> {
-        Arc::new(Self { db, jwt, security, supabase })
+    pub fn new(
+        db: Db,
+        jwt: JwtManager,
+        security: SecurityConfig,
+        supabase: SupabaseCtx,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            db,
+            jwt,
+            security,
+            supabase,
+        })
     }
 }

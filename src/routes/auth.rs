@@ -1,23 +1,23 @@
 use axum::{
-    extract::State,
-    http::{HeaderMap, StatusCode},
-    routing::post,
     Json, Router,
-    response::{IntoResponse, Response},
+    extract::State,
     http::header::SET_COOKIE,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::post,
 };
-use serde::{Deserialize, Serialize};
-use sqlx::Row;
-use uuid::Uuid;
-use time::{Duration, OffsetDateTime};
-use sha2::{Digest, Sha256};
-use cookie::{Cookie, SameSite};
+use cookie::Cookie;
 use cookie::time::Duration as CookieDuration;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use sqlx::Row;
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
 use crate::security::{password, totp};
-use crate::state::AppState;
 use crate::security::{rate_limit, risk};
+use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -63,16 +63,28 @@ async fn register(
         if !rate_limit::check(&ip, 20, 60) {
             return Err((StatusCode::TOO_MANY_REQUESTS, "rate_limited".into()));
         }
-        match risk::risk_check(&state.db, None, Some(&ip), headers.get("user-agent").and_then(|h| h.to_str().ok())).await {
+        match risk::risk_check(
+            &state.db,
+            None,
+            Some(&ip),
+            headers.get("user-agent").and_then(|h| h.to_str().ok()),
+        )
+        .await
+        {
             risk::RiskDecision::Allow => {}
-            risk::RiskDecision::Block(reason) => return Err((StatusCode::FORBIDDEN, reason.into())),
+            risk::RiskDecision::Block(reason) => {
+                return Err((StatusCode::FORBIDDEN, reason.into()));
+            }
         }
     }
     if !validate_email(&payload.email) {
         return Err((StatusCode::BAD_REQUEST, "Invalid email".into()));
     }
     if !validate_password(&payload.password) {
-        return Err((StatusCode::BAD_REQUEST, "Password too weak (min 12 chars)".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Password too weak (min 12 chars)".into(),
+        ));
     }
 
     let hash = password::hash_password(&payload.password).map_err(internal_error)?;
@@ -102,7 +114,10 @@ async fn register(
         &state,
         user_id,
         &refresh_hash,
-        headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+        headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string()),
         risk::extract_ip(&headers),
         None,
     )
@@ -131,13 +146,11 @@ async fn login(
         return Err((StatusCode::BAD_REQUEST, "Invalid email".into()));
     }
 
-    let row = sqlx::query(
-        "SELECT id, password_hash, role, banned FROM users WHERE email = $1",
-    )
-    .bind(&payload.email)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(internal_error)?;
+    let row = sqlx::query("SELECT id, password_hash, role, banned FROM users WHERE email = $1")
+        .bind(&payload.email)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal_error)?;
 
     let row = match row {
         Some(r) => r,
@@ -152,7 +165,8 @@ async fn login(
         return Err((StatusCode::FORBIDDEN, "User banned".into()));
     }
 
-    let valid = password::verify_password(&payload.password, &stored_hash).map_err(internal_error)?;
+    let valid =
+        password::verify_password(&payload.password, &stored_hash).map_err(internal_error)?;
     if !valid {
         sqlx::query("UPDATE users SET failed_login_count = coalesce(failed_login_count,0)+1, last_failed_at = now() WHERE id = $1")
             .bind(user_id)
@@ -163,7 +177,14 @@ async fn login(
     }
 
     let ip = risk::extract_ip(&headers);
-    match risk::risk_check(&state.db, Some(user_id), ip.as_deref(), headers.get("user-agent").and_then(|h| h.to_str().ok())).await {
+    match risk::risk_check(
+        &state.db,
+        Some(user_id),
+        ip.as_deref(),
+        headers.get("user-agent").and_then(|h| h.to_str().ok()),
+    )
+    .await
+    {
         risk::RiskDecision::Allow => {}
         risk::RiskDecision::Block(reason) => return Err((StatusCode::FORBIDDEN, reason.into())),
     }
@@ -174,7 +195,10 @@ async fn login(
         .await
         .ok();
 
-    let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let _ = sqlx::query("INSERT INTO login_logs (id, user_id, ip, user_agent, success, created_at) VALUES ($1, $2, $3, $4, true, now())")
         .bind(Uuid::new_v4())
         .bind(user_id)
@@ -188,15 +212,7 @@ async fn login(
         .issue_access(&user_id.to_string(), Some(role))
         .map_err(internal_error)?;
     let (refresh_token, refresh_hash) = generate_refresh_token();
-    store_refresh_token(
-        &state,
-        user_id,
-        &refresh_hash,
-        ua.clone(),
-        ip.clone(),
-        None,
-    )
-    .await?;
+    store_refresh_token(&state, user_id, &refresh_hash, ua.clone(), ip.clone(), None).await?;
 
     Ok(token_response(access, refresh_token, &state))
 }
@@ -238,7 +254,14 @@ async fn refresh(
     }
 
     let user_id: Uuid = row.get("user_id");
-    match risk::risk_check(&state.db, Some(user_id), ip.as_deref(), headers.get("user-agent").and_then(|h| h.to_str().ok())).await {
+    match risk::risk_check(
+        &state.db,
+        Some(user_id),
+        ip.as_deref(),
+        headers.get("user-agent").and_then(|h| h.to_str().ok()),
+    )
+    .await
+    {
         risk::RiskDecision::Allow => {}
         risk::RiskDecision::Block(reason) => return Err((StatusCode::FORBIDDEN, reason.into())),
     }
@@ -255,7 +278,10 @@ async fn refresh(
         &state,
         user_id,
         &new_hash,
-        headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+        headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string()),
         risk::extract_ip(&headers),
         Some(old_id),
     )
@@ -319,7 +345,11 @@ async fn request_password_reset(
         .await
         .map_err(internal_error)?;
 
-    tracing::info!("Password reset token issued for {}: {}", payload.email, token);
+    tracing::info!(
+        "Password reset token issued for {}: {}",
+        payload.email,
+        token
+    );
     Ok("reset requested")
 }
 
@@ -334,17 +364,19 @@ async fn reset_password(
     Json(payload): Json<ResetPayload>,
 ) -> Result<Response, (StatusCode, String)> {
     if !validate_password(&payload.new_password) {
-        return Err((StatusCode::BAD_REQUEST, "Password too weak (min 12 chars)".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Password too weak (min 12 chars)".into(),
+        ));
     }
 
     let token_hash = hash_refresh_token(&payload.reset_token);
-    let row = sqlx::query(
-        "SELECT user_id, expires_at, used FROM password_resets WHERE token_hash = $1",
-    )
-    .bind(&token_hash)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(internal_error)?;
+    let row =
+        sqlx::query("SELECT user_id, expires_at, used FROM password_resets WHERE token_hash = $1")
+            .bind(&token_hash)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal_error)?;
 
     let row = match row {
         Some(r) => r,
@@ -377,7 +409,10 @@ async fn reset_password(
         .await
         .ok();
 
-    let access = state.jwt.issue_access(&user_id.to_string(), Some("user".into())).map_err(internal_error)?;
+    let access = state
+        .jwt
+        .issue_access(&user_id.to_string(), Some("user".into()))
+        .map_err(internal_error)?;
     let (refresh_token, refresh_hash) = generate_refresh_token();
     store_refresh_token(&state, user_id, &refresh_hash, None, None, None).await?;
 
@@ -527,9 +562,14 @@ fn token_response(access: String, refresh: String, state: &std::sync::Arc<AppSta
     res
 }
 
-fn attach_cookies(res: &mut Response, state: &std::sync::Arc<AppState>, access: &str, refresh: &str) {
+fn attach_cookies(
+    res: &mut Response,
+    state: &std::sync::Arc<AppState>,
+    access: &str,
+    refresh: &str,
+) {
     let cfg = &state.security;
-    let same_site = if cfg.same_site_strict { SameSite::Strict } else { SameSite::Lax };
+    let same_site = cfg.same_site;
     let access_cookie = Cookie::build((cfg.access_cookie_name.clone(), access.to_string()))
         .http_only(true)
         .secure(cfg.secure_cookies)
@@ -546,12 +586,14 @@ fn attach_cookies(res: &mut Response, state: &std::sync::Arc<AppState>, access: 
         .path("/")
         .build()
         .to_string();
-    res.headers_mut().append(SET_COOKIE, access_cookie.parse().unwrap());
-    res.headers_mut().append(SET_COOKIE, refresh_cookie.parse().unwrap());
+    res.headers_mut()
+        .append(SET_COOKIE, access_cookie.parse().unwrap());
+    res.headers_mut()
+        .append(SET_COOKIE, refresh_cookie.parse().unwrap());
 }
 
 fn clear_cookies(res: &mut Response, cfg: &crate::security::config::SecurityConfig) {
-    let same_site = if cfg.same_site_strict { SameSite::Strict } else { SameSite::Lax };
+    let same_site = cfg.same_site;
     let access_cookie = Cookie::build((cfg.access_cookie_name.clone(), ""))
         .http_only(true)
         .secure(cfg.secure_cookies)
@@ -568,6 +610,8 @@ fn clear_cookies(res: &mut Response, cfg: &crate::security::config::SecurityConf
         .path("/")
         .build()
         .to_string();
-    res.headers_mut().append(SET_COOKIE, access_cookie.parse().unwrap());
-    res.headers_mut().append(SET_COOKIE, refresh_cookie.parse().unwrap());
+    res.headers_mut()
+        .append(SET_COOKIE, access_cookie.parse().unwrap());
+    res.headers_mut()
+        .append(SET_COOKIE, refresh_cookie.parse().unwrap());
 }

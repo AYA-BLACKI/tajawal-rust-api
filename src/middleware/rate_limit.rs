@@ -1,14 +1,8 @@
-use axum::{
-    http::Request,
-    response::Response,
-    middleware::Next,
-    http::StatusCode,
-    extract::State,
-};
+use axum::{http::Request, http::StatusCode, middleware::Next, response::Response};
 use dashmap::DashMap;
-use std::time::{Duration, Instant};
-use std::sync::Arc;
 use once_cell::sync::Lazy;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::state::AppState;
 
@@ -26,10 +20,7 @@ pub async fn rate_limit_with_config(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
-    let _state = req
-        .extensions()
-        .get::<Arc<AppState>>()
-        .cloned();
+    let _state = req.extensions().get::<Arc<AppState>>().cloned();
     let path = req.uri().path().to_string();
     let ip = req
         .headers()

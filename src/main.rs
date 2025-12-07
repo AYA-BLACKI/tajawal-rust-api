@@ -1,24 +1,26 @@
-mod routes;
-mod security;
+mod domain;
 mod infra;
 mod middleware;
-mod domain;
+mod routes;
+mod security;
 mod state;
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use infra::db::connect;
-use std::net::SocketAddr;
-use tower_http::{trace::TraceLayer, cors::CorsLayer};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use security::config::SecurityConfig;
 use infra::supabase::SupabaseCtx;
+use security::config::SecurityConfig;
+use std::net::SocketAddr;
 use tower_http::cors::AllowHeaders;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -46,7 +48,11 @@ async fn main() -> anyhow::Result<()> {
 fn build_cors() -> CorsLayer {
     let origins = std::env::var("ALLOWED_ORIGINS").unwrap_or_default();
     let mut allowed = Vec::new();
-    for origin in origins.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    for origin in origins
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         if let Ok(val) = origin.parse() {
             allowed.push(val);
         } else {
@@ -59,7 +65,11 @@ fn build_cors() -> CorsLayer {
     } else {
         CorsLayer::new()
             .allow_origin(allowed)
-            .allow_methods(vec![http::Method::GET, http::Method::POST, http::Method::OPTIONS])
+            .allow_methods(vec![
+                http::Method::GET,
+                http::Method::POST,
+                http::Method::OPTIONS,
+            ])
             .allow_headers(AllowHeaders::any())
             .allow_credentials(true)
     };

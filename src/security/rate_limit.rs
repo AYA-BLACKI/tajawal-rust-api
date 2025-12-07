@@ -1,9 +1,10 @@
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use once_cell::sync::Lazy;
 
-static RATE_LIMITER: Lazy<Mutex<HashMap<String, (u32, Instant)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static RATE_LIMITER: Lazy<Mutex<HashMap<String, (u32, Instant)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn check(ip: &str, limit: u32, window_secs: u64) -> bool {
     let mut map = RATE_LIMITER.lock().unwrap();

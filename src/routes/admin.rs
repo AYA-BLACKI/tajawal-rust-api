@@ -1,8 +1,8 @@
-use axum::{Router, routing::get, Json};
-use serde::Serialize;
-use std::sync::Arc;
 use crate::state::AppState;
+use axum::{Json, Router, routing::get};
+use serde::Serialize;
 use sqlx::Row;
+use std::sync::Arc;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -17,7 +17,10 @@ struct HealthResponse {
 }
 
 async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok", build: "secure-backend" })
+    Json(HealthResponse {
+        status: "ok",
+        build: "secure-backend",
+    })
 }
 
 #[derive(Serialize)]
@@ -35,11 +38,14 @@ async fn list_users(
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let data = rows.into_iter().map(|r| UserEntry {
-        id: r.get::<uuid::Uuid, _>("id").to_string(),
-        email: r.get("email"),
-        role: r.get("role"),
-    }).collect();
+    let data = rows
+        .into_iter()
+        .map(|r| UserEntry {
+            id: r.get::<uuid::Uuid, _>("id").to_string(),
+            email: r.get("email"),
+            role: r.get("role"),
+        })
+        .collect();
 
     Ok(Json(data))
 }

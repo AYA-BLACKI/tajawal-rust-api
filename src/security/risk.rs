@@ -40,12 +40,11 @@ pub async fn risk_check(
 
     // Brute force: recent failures
     if let Some(uid) = user_id {
-        if let Ok(row) = sqlx::query(
-            "SELECT failed_login_count, last_failed_at FROM users WHERE id = $1",
-        )
-        .bind(uid)
-        .fetch_optional(db)
-        .await
+        if let Ok(row) =
+            sqlx::query("SELECT failed_login_count, last_failed_at FROM users WHERE id = $1")
+                .bind(uid)
+                .fetch_optional(db)
+                .await
         {
             if let Some(r) = row {
                 let count: i64 = r.get("failed_login_count");

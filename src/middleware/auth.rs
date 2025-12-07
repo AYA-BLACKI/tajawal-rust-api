@@ -1,8 +1,8 @@
-use axum::{http::StatusCode, response::Response, middleware::Next};
+use axum::{http::StatusCode, middleware::Next, response::Response};
 use std::sync::Arc;
 
-use cookie::Cookie;
 use crate::{security::jwt::JwtManager, state::AppState};
+use cookie::Cookie;
 
 pub async fn auth_middleware(
     mut req: axum::http::Request<axum::body::Body>,

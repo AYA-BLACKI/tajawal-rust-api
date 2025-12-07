@@ -1,11 +1,11 @@
-use axum::{routing::get, Router, middleware::from_fn};
-use crate::{state::AppState, middleware};
 use crate::security::jwt::Claims;
+use crate::{middleware, state::AppState};
 use axum::Json;
+use axum::{Router, middleware::from_fn, routing::get};
 use std::sync::Arc;
 
-mod auth;
 mod admin;
+mod auth;
 
 pub fn router() -> Router<Arc<AppState>> {
     let auth_layer = from_fn(middleware::auth::auth_middleware);
@@ -18,14 +18,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/dashboard", get(me).layer(auth_layer.clone()))
         .nest(
             "/admin",
-            admin::router()
-                .layer(admin_layer)
-                .layer(auth_layer),
+            admin::router().layer(admin_layer).layer(auth_layer),
         )
 }
 
-async fn me(
-    axum::extract::Extension(claims): axum::extract::Extension<Claims>,
-) -> Json<Claims> {
+async fn me(axum::extract::Extension(claims): axum::extract::Extension<Claims>) -> Json<Claims> {
     Json(claims)
 }
